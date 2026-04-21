@@ -85,6 +85,8 @@ setup_mcp_venv() {
   python3 -m venv "$VENV_DIR"
   "$VENV_DIR/bin/pip" install --upgrade pip setuptools wheel
   "$VENV_DIR/bin/pip" install "$MCP_DIR"
+  # anyio 4.9.0 has a cancel scope regression that breaks MCP server startup.
+  "$VENV_DIR/bin/pip" install "anyio<4.9"
 }
 
 write_service() {
