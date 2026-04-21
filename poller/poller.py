@@ -182,6 +182,27 @@ def query_history(db_path: str, chat_jid: str, limit: int) -> list[dict]:
         return []
 
 
+def query_active_chats(db_path: str, since_ts: float) -> list[str]:
+    """Return chat_jid values that have traffic at or after the coarse global floor."""
+    try:
+        con = _open_db(db_path)
+        cur = con.execute(
+            """
+            SELECT DISTINCT chat_jid
+            FROM messages
+            WHERE timestamp >= ?
+            ORDER BY chat_jid ASC
+            """,
+            (since_ts,),
+        )
+        rows = [r["chat_jid"] for r in cur.fetchall() if r["chat_jid"]]
+        con.close()
+        return rows
+    except Exception as e:
+        log.error("DB active chats query failed: %s", e)
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Prompt building
 # ---------------------------------------------------------------------------
@@ -324,52 +345,53 @@ def run() -> None:
 
     while True:
         try:
-            since_iso = state["last_seen_ts"]
-            since_ts = iso_to_ts(since_iso)
+            coarse_floor_iso = state["last_seen_ts"]
+            coarse_floor_ts = iso_to_ts(coarse_floor_iso)
             sent_ids = set(state.get("sent_ids", []))
             seen_ids = set(state.get("seen_ids", []))
-            seen_message_ids = sent_ids | seen_ids
+            chat_watermarks_raw = state.get("chat_watermarks", {})
+            chat_watermarks: dict[str, float] = {
+                jid: iso_to_ts(ts) if isinstance(ts, str) else float(ts)
+                for jid, ts in chat_watermarks_raw.items()
+            }
+            newly_seen_ids: set[str] = set()
 
-            rows = query_new_messages(WA_DB_PATH, since_ts, seen_ids=seen_message_ids)
+            active_chats = set(query_active_chats(WA_DB_PATH, coarse_floor_ts)) | set(chat_watermarks.keys())
 
-            if rows:
-                # Group by chat. We separately track outbound sent_ids and
-                # successfully-processed inbound seen_ids so >= timestamp polling
-                # does not duplicate work when multiple messages share a second.
-                chats: dict[str, list[dict]] = {}
-                chat_watermarks_raw = state.get("chat_watermarks", {})
-                chat_watermarks: dict[str, float] = {
-                    jid: iso_to_ts(ts) if isinstance(ts, str) else float(ts)
-                    for jid, ts in chat_watermarks_raw.items()
-                }
-                newly_seen_ids: set[str] = set()
+            for chat_jid in sorted(active_chats):
+                try:
+                    chat_since = chat_watermarks.get(chat_jid, coarse_floor_ts)
+                    chat_seen_ids = sent_ids | seen_ids | newly_seen_ids
+                    msgs = query_new_messages(
+                        WA_DB_PATH,
+                        chat_since,
+                        seen_ids=chat_seen_ids,
+                        chat_jid=chat_jid,
+                    )
+                    if not msgs:
+                        continue
 
-                for msg in rows:
-                    chats.setdefault(msg["chat_jid"], []).append(msg)
+                    ok, watermark_ts = process_chat(chat_jid, msgs, state)
+                    sent_ids = set(state.get("sent_ids", []))
+                    if ok and watermark_ts is not None:
+                        newly_seen_ids.update(msg["id"] for msg in msgs)
+                        previous = chat_watermarks.get(chat_jid, coarse_floor_ts)
+                        chat_watermarks[chat_jid] = max(previous, watermark_ts)
+                    else:
+                        log.warning(
+                            "Claude invocation failed for %s; chat watermark unchanged so messages retry",
+                            chat_jid,
+                        )
+                except Exception as e:
+                    log.error("Unhandled error processing chat %s: %s", chat_jid, e)
 
-                for chat_jid, msgs in chats.items():
-                    try:
-                        ok, watermark_ts = process_chat(chat_jid, msgs, state)
-                        if ok:
-                            newly_seen_ids.update(msg["id"] for msg in msgs)
-                            if watermark_ts is not None:
-                                previous = chat_watermarks.get(chat_jid, since_ts)
-                                chat_watermarks[chat_jid] = max(previous, watermark_ts)
-                        else:
-                            log.warning(
-                                "Claude invocation failed for %s; chat watermark unchanged so messages retry",
-                                chat_jid,
-                            )
-                    except Exception as e:
-                        log.error("Unhandled error processing chat %s: %s", chat_jid, e)
-
-                state["chat_watermarks"] = {
-                    jid: ts_to_iso(ts) for jid, ts in chat_watermarks.items()
-                }
-                state["seen_ids"] = cap_sent_ids(list(seen_ids | newly_seen_ids))
-                if chat_watermarks:
-                    state["last_seen_ts"] = ts_to_iso(max(chat_watermarks.values()))
-                save_state(STATE_PATH, state)
+            state["chat_watermarks"] = {
+                jid: ts_to_iso(ts) for jid, ts in chat_watermarks.items()
+            }
+            state["seen_ids"] = cap_sent_ids(list(seen_ids | newly_seen_ids))
+            if chat_watermarks:
+                state["last_seen_ts"] = ts_to_iso(min(chat_watermarks.values()))
+            save_state(STATE_PATH, state)
 
         except Exception as e:
             log.error("Poll cycle error: %s", e)
