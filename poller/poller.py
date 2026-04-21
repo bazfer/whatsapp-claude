@@ -92,7 +92,7 @@ def iso_to_ts(iso: str) -> float:
 
 
 def ts_to_iso(ts: float) -> str:
-    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(timespec="microseconds")
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(timespec="seconds")
 
 
 # ---------------------------------------------------------------------------
