@@ -36,6 +36,12 @@ check_go() {
   need_cmd go
 }
 
+check_required_tools() {
+  need_cmd git
+  need_cmd timeout
+  need_cmd claude
+}
+
 check_systemd_user() {
   need_cmd systemctl
   systemctl --user --version >/dev/null 2>&1 || err "systemd user services are required (systemctl --user unavailable)"
@@ -43,10 +49,22 @@ check_systemd_user() {
 
 ensure_env_file() {
   [ -f "$ENV_FILE" ] || err "missing $ENV_FILE. Copy .env.example to .env and fill it first."
-  set -a
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
-  set +a
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%%#*}
+    line=$(printf '%s' "$line" | sed 's/[[:space:]]*$//')
+    [ -z "$line" ] && continue
+
+    if [[ "$line" =~ ^[A-Z_][A-Z0-9_]*= ]]; then
+      key=${line%%=*}
+      value=${line#*=}
+      if [[ "$value" =~ ^".*"$ ]]; then
+        value=${value:1:-1}
+      elif [[ "$value" =~ ^'.*'$ ]]; then
+        value=${value:1:-1}
+      fi
+      export "$key=$value"
+    fi
+  done < "$ENV_FILE"
 }
 
 sync_submodule() {
@@ -141,8 +159,13 @@ WantedBy=default.target"
 }
 
 first_auth() {
-  echo "Scan QR now"
   mkdir -p "$STORE_DIR"
+  if [ -f "$STORE_DIR/whatsmeow.db" ]; then
+    echo "Existing WhatsApp session detected, skipping QR auth."
+    return
+  fi
+
+  echo "Scan QR now"
   (
     cd "$BRIDGE_DIR"
     timeout 90s "$BRIDGE_BIN" || true
@@ -158,6 +181,7 @@ start_services() {
 main() {
   check_go
   check_python
+  check_required_tools
   check_systemd_user
   ensure_env_file
   sync_submodule

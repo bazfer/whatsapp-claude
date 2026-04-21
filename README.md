@@ -13,6 +13,7 @@ Requirements:
 - systemd user services (`systemctl --user`)
 - `claude` CLI on PATH and already authenticated
 - git
+- `timeout` (coreutils)
 
 ### 1. Clone
 
@@ -46,7 +47,7 @@ Important defaults:
 ```
 
 The installer will:
-- validate Go, Python 3.11+, and `systemctl --user`
+- validate Go, Python 3.11+, `git`, `timeout`, `claude`, and `systemctl --user`
 - build the Go bridge from the pinned submodule
 - create a Python virtualenv for the MCP server
 - install 3 user services: `whatsapp-bridge`, `whatsapp-mcp-server`, `whatsapp-poller`
