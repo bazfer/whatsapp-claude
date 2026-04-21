@@ -394,7 +394,7 @@ def run() -> None:
                         chat_watermarks[chat_jid] = max(previous, watermark_ts)
                     else:
                         log.warning(
-                            "Claude invocation failed for %s; watermark unchanged, messages will retry",
+                            "Claude failed for %s; watermark unchanged, will retry",
                             chat_jid,
                         )
                 except Exception as e:
