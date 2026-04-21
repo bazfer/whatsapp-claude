@@ -266,7 +266,7 @@ def build_prompt(recipient_jid: str, history: list[dict], new_msgs: list[dict]) 
 
 def call_claude(prompt: str) -> bool:
     """
-    Invoke `claude -p <prompt> --no-markdown` from BOT_WORKING_DIR.
+    Invoke `claude -p <prompt>` from BOT_WORKING_DIR.
     Claude is expected to call send_message via MCP; we do NOT parse stdout.
     Returns True if claude exited 0, False otherwise.
     """
