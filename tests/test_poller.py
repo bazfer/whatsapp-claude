@@ -36,4 +36,3 @@ def test_fmt_msg_from_them():
     line = _fmt_msg(msg)
     assert sender in line
     assert "hello" in line
-
