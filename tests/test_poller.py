@@ -1,4 +1,6 @@
-import sys, os
+import os
+import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from poller.poller import cap_sent_ids, ts_to_iso, iso_to_ts, _fmt_msg
@@ -29,7 +31,9 @@ def test_fmt_msg_from_me():
 
 
 def test_fmt_msg_from_them():
-    msg = {"timestamp": 1745272200, "is_from_me": 0, "content": "hello", "sender": "5491234@s.whatsapp.net"}
+    sender = "5491234@s.whatsapp.net"
+    msg = {"timestamp": 1745272200, "is_from_me": 0, "content": "hello", "sender": sender}
     line = _fmt_msg(msg)
-    assert "5491234@s.whatsapp.net" in line
+    assert sender in line
     assert "hello" in line
+
