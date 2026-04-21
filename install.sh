@@ -7,7 +7,7 @@ BRIDGE_DIR="$SUBMODULE_DIR/whatsapp-bridge"
 MCP_DIR="$SUBMODULE_DIR/whatsapp-mcp-server"
 BIN_DIR="$REPO_ROOT/.local/bin"
 VENV_DIR="$REPO_ROOT/.venvs/whatsapp-mcp-server"
-STORE_DIR="$REPO_ROOT/store"
+STORE_DIR="$BRIDGE_DIR/store"
 WHATSAPP_SUBMODULE_DB="$STORE_DIR/messages.db"
 SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 ENV_FILE="$REPO_ROOT/.env"
@@ -100,6 +100,8 @@ install_services() {
   local db_path="${WA_DB_PATH:-$WHATSAPP_SUBMODULE_DB}"
   local state_path="${STATE_PATH:-$REPO_ROOT/state.json}"
   local bot_dir="${BOT_WORKING_DIR:-$REPO_ROOT}"
+  local bridge_store_dir
+  bridge_store_dir=$(dirname "$db_path")
 
   write_service "whatsapp-bridge" "[Unit]
 Description=WhatsApp bridge
@@ -110,6 +112,7 @@ Type=simple
 WorkingDirectory=$BRIDGE_DIR
 EnvironmentFile=$ENV_FILE
 Environment=WHATSAPP_BRIDGE_PORT=$bridge_port
+Environment=STORE_PATH=$bridge_store_dir
 ExecStart=$BRIDGE_BIN
 Restart=on-failure
 RestartSec=3

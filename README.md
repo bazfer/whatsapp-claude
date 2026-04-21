@@ -37,7 +37,7 @@ $EDITOR .env
 
 Important defaults:
 - `BOT_WORKING_DIR` should point to this repo root
-- `WA_DB_PATH` defaults to `store/messages.db` inside this repo
+- `WA_DB_PATH` defaults to `vendor/whatsapp-mcp/whatsapp-bridge/store/messages.db` so it matches the bridge storage location
 - `WHATSAPP_API_URL` should normally stay `http://127.0.0.1:8080/api`
 
 ### 3. Run install
@@ -52,7 +52,7 @@ The installer will:
 - create a Python virtualenv for the MCP server
 - install 3 user services: `whatsapp-bridge`, `whatsapp-mcp-server`, `whatsapp-poller`
 - read configuration from repo-root `.env`
-- create and use repo-local `store/` for WhatsApp bridge/session data
+- create and use the bridge submodule `store/` directory for WhatsApp bridge/session data
 
 ### 4. Scan QR
 
@@ -76,7 +76,7 @@ journalctl --user -u whatsapp-bridge -f
 - `install.sh` — Linux server bootstrap
 - `poller/poller.py` — Claude polling daemon
 - `vendor/whatsapp-mcp` — pinned upstream submodule
-- `store/` — runtime WhatsApp bridge data
+- `vendor/whatsapp-mcp/whatsapp-bridge/store/` — runtime WhatsApp bridge data
 
 ## Notes
 
