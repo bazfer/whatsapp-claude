@@ -83,7 +83,7 @@ def save_state(path: str, state: dict) -> None:
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    return ts_to_iso(float(int(time.time())))
 
 
 def iso_to_ts(iso: str) -> float:
@@ -115,6 +115,7 @@ def query_new_messages(db_path: str, since_ts: float, seen_ids: set[str] | None 
             SELECT id, chat_jid, sender, content, timestamp, is_from_me
             FROM messages
             WHERE timestamp >= ?
+              AND is_from_me = 0
         """
         params: list[Any] = [since_ts]
         if chat_jid is not None:
@@ -214,14 +215,14 @@ def _fmt_msg(msg: dict) -> str:
     return f"[{ts}] {role}: {msg.get('content', '')}"
 
 
-def build_prompt(sender_jid: str, history: list[dict], new_msgs: list[dict]) -> str:
+def build_prompt(recipient_jid: str, history: list[dict], new_msgs: list[dict]) -> str:
     history_text = "\n".join(_fmt_msg(m) for m in history) if history else "(no prior history)"
     new_text = "\n".join(_fmt_msg(m) for m in new_msgs)
     n = HISTORY_MESSAGES
     return (
         f"You are a WhatsApp assistant. A new message arrived. "
         f"Reply using the send_message MCP tool.\n\n"
-        f"Recipient: {sender_jid}\n\n"
+        f"Recipient: {recipient_jid}\n\n"
         f"Recent conversation (last {n} messages):\n{history_text}\n\n"
         f"New message: {new_text}"
     )
@@ -288,9 +289,9 @@ def process_chat(chat_jid: str, new_msgs: list[dict], state: dict) -> tuple[bool
     sent_ids: set = set(state.get("sent_ids", []))
 
     history = query_history(WA_DB_PATH, chat_jid, HISTORY_MESSAGES)
-    # Use the sender JID of the first new message as the reply target
-    sender_jid = new_msgs[0].get("sender") or chat_jid
-    prompt = build_prompt(sender_jid, history, new_msgs)
+    # Always reply to the conversation JID. In group chats, sender is the participant, not the room.
+    recipient_jid = chat_jid
+    prompt = build_prompt(recipient_jid, history, new_msgs)
 
     invocation_start = datetime.now(timezone.utc).timestamp()
     log.info("Invoking claude for chat=%s (%d new message(s))", chat_jid, len(new_msgs))
