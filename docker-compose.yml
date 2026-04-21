@@ -1,0 +1,67 @@
+# ---------------------------------------------------------------------------
+# Shared volume so all three services read/write the same SQLite DB.
+# The whatsapp-bridge Go service owns the file; poller and mcp-server read it.
+# ---------------------------------------------------------------------------
+volumes:
+  wa_store:
+  poller_state:
+
+services:
+
+  # --------------------------------------------------------------------------
+  # Go bridge — maintains the WhatsApp connection and writes messages.db
+  # Image comes from the whatsapp-mcp project.
+  # --------------------------------------------------------------------------
+  bridge:
+    image: ghcr.io/deetbot/whatsapp-mcp/bridge:latest
+    restart: unless-stopped
+    volumes:
+      - wa_store:/store
+    environment:
+      - STORE_PATH=/store/messages.db
+    # Expose pairing QR on the terminal on first run:
+    stdin_open: true
+    tty: true
+
+  # --------------------------------------------------------------------------
+  # Python MCP server — exposes WhatsApp tools (send_message, list_chats, …)
+  # Claude's `claude -p` invocation talks to this server.
+  # --------------------------------------------------------------------------
+  mcp-server:
+    image: ghcr.io/deetbot/whatsapp-mcp/mcp-server:latest
+    restart: unless-stopped
+    depends_on:
+      - bridge
+    volumes:
+      - wa_store:/store
+    environment:
+      - WA_DB_PATH=/store/messages.db
+    # MCP server listens on stdio; claude CLI connects to it automatically
+    # via the MCP config in ~/.claude/ or the project .claude/settings.json.
+
+  # --------------------------------------------------------------------------
+  # Poller — this repo. Watches the DB, calls `claude -p`, records sent IDs.
+  # --------------------------------------------------------------------------
+  poller:
+    build:
+      context: .
+      dockerfile: poller/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - bridge
+      - mcp-server
+    volumes:
+      - wa_store:/store
+      # Mount the claude CLI from the host so the container can invoke it.
+      - /usr/local/bin/claude:/usr/local/bin/claude:ro
+      # Mount the repo root so CLAUDE.md is found at BOT_WORKING_DIR.
+      - .:/app/bot:ro
+      # Persist state.json in a named volume so startup is not blocked by a missing host file.
+      - poller_state:/app/state
+    environment:
+      - WA_DB_PATH=/store/messages.db
+      - STATE_PATH=/app/state/state.json
+      - BOT_WORKING_DIR=/app/bot
+      - POLL_INTERVAL_SECONDS=${POLL_INTERVAL_SECONDS:-10}
+      - HISTORY_MESSAGES=${HISTORY_MESSAGES:-10}
+      - CLAUDE_TIMEOUT_SECONDS=${CLAUDE_TIMEOUT_SECONDS:-60}
