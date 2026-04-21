@@ -1,0 +1,3 @@
+[submodule "vendor/whatsapp-mcp"]
+	path = vendor/whatsapp-mcp
+	url = https://github.com/verygoodplugins/whatsapp-mcp.git
