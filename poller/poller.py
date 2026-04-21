@@ -109,25 +109,57 @@ def _open_db(db_path: str) -> sqlite3.Connection:
     return con
 
 
+def _parse_ts(ts: Any) -> float:
+    """Normalise timestamp to epoch float regardless of whether the DB stores
+    an integer, a float, or an ISO-8601 string (e.g. '2026-04-21 23:31:04+00:00')."""
+    if isinstance(ts, (int, float)):
+        return float(ts)
+    try:
+        return datetime.fromisoformat(str(ts)).timestamp()
+    except Exception:
+        return float(ts)
+
+
+def _ts_to_db_str(ts: float) -> str:
+    """Convert epoch float to the ISO string format stored in the DB."""
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S+00:00")
+
+
+def _ts_where_clause() -> str:
+    """Return a SQL fragment that compares `timestamp >= ?` correctly for both
+    integer-epoch and ISO-string timestamp columns.  The single bound parameter
+    must be supplied as a float epoch value."""
+    return """
+        CASE WHEN typeof(timestamp) = 'text'
+             THEN timestamp >= :ts_str
+             ELSE CAST(timestamp AS REAL) >= :ts_num
+        END
+    """
+
+
+def _normalise_row(row: dict) -> dict:
+    row["timestamp"] = _parse_ts(row["timestamp"])
+    return row
+
+
 def query_new_messages(
     db_path: str, since_ts: float, seen_ids: set[str] | None = None, chat_jid: str | None = None
 ) -> list[dict]:
     """Return unseen messages with timestamp >= since_ts, oldest first."""
     try:
         con = _open_db(db_path)
-        sql = """
+        sql = f"""
             SELECT id, chat_jid, sender, content, timestamp, is_from_me
             FROM messages
-            WHERE timestamp >= ?
-              AND is_from_me = 0
+            WHERE {_ts_where_clause()}
         """
-        params: list[Any] = [since_ts]
+        params: dict[str, Any] = {"ts_str": _ts_to_db_str(since_ts), "ts_num": since_ts}
         if chat_jid is not None:
-            sql += " AND chat_jid = ?"
-            params.append(chat_jid)
+            sql += " AND chat_jid = :chat_jid"
+            params["chat_jid"] = chat_jid
         sql += " ORDER BY timestamp ASC, id ASC"
         cur = con.execute(sql, params)
-        rows = [dict(r) for r in cur.fetchall()]
+        rows = [_normalise_row(dict(r)) for r in cur.fetchall()]
         if seen_ids:
             rows = [r for r in rows if r["id"] not in seen_ids]
         con.close()
@@ -147,21 +179,21 @@ def query_messages_since(
     """Return messages with timestamp >= since_ts, with optional chat/from-me filters."""
     try:
         con = _open_db(db_path)
-        sql = """
+        sql = f"""
             SELECT id, chat_jid, sender, content, timestamp, is_from_me
             FROM messages
-            WHERE timestamp >= ?
+            WHERE {_ts_where_clause()}
         """
-        params: list[Any] = [since_ts]
+        params: dict[str, Any] = {"ts_str": _ts_to_db_str(since_ts), "ts_num": since_ts}
         if chat_jid is not None:
-            sql += " AND chat_jid = ?"
-            params.append(chat_jid)
+            sql += " AND chat_jid = :chat_jid"
+            params["chat_jid"] = chat_jid
         if is_from_me is not None:
-            sql += " AND is_from_me = ?"
-            params.append(is_from_me)
+            sql += " AND is_from_me = :is_from_me"
+            params["is_from_me"] = is_from_me
         sql += " ORDER BY timestamp ASC, id ASC"
         cur = con.execute(sql, params)
-        rows = [dict(r) for r in cur.fetchall()]
+        rows = [_normalise_row(dict(r)) for r in cur.fetchall()]
         if seen_ids:
             rows = [r for r in rows if r["id"] not in seen_ids]
         con.close()
@@ -185,7 +217,7 @@ def query_history(db_path: str, chat_jid: str, limit: int) -> list[dict]:
             """,
             (chat_jid, limit),
         )
-        rows = list(reversed([dict(r) for r in cur.fetchall()]))
+        rows = list(reversed([_normalise_row(dict(r)) for r in cur.fetchall()]))
         con.close()
         return rows
     except Exception as e:
@@ -198,13 +230,13 @@ def query_active_chats(db_path: str, since_ts: float) -> list[str]:
     try:
         con = _open_db(db_path)
         cur = con.execute(
-            """
+            f"""
             SELECT DISTINCT chat_jid
             FROM messages
-            WHERE timestamp >= ?
+            WHERE {_ts_where_clause()}
             ORDER BY chat_jid ASC
             """,
-            (since_ts,),
+            {"ts_str": _ts_to_db_str(since_ts), "ts_num": since_ts},
         )
         rows = [r["chat_jid"] for r in cur.fetchall() if r["chat_jid"]]
         con.close()
@@ -245,13 +277,13 @@ def build_prompt(recipient_jid: str, history: list[dict], new_msgs: list[dict]) 
 
 def call_claude(prompt: str) -> bool:
     """
-    Invoke `claude -p <prompt> --no-markdown` from BOT_WORKING_DIR.
+    Invoke `claude -p <prompt>` from BOT_WORKING_DIR.
     Claude is expected to call send_message via MCP; we do NOT parse stdout.
     Returns True if claude exited 0, False otherwise.
     """
     try:
         result = subprocess.run(
-            ["claude", "-p", prompt, "--no-markdown"],
+            ["claude", "-p", prompt],
             cwd=BOT_WORKING_DIR,
             capture_output=True,
             text=True,
