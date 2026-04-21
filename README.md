@@ -59,7 +59,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-> **Note:** The `claude` CLI is bind-mounted from the host at `/usr/local/bin/claude`. Adjust the path in `docker-compose.yml` if it lives elsewhere on your system.
+> **Note:** The `claude` CLI is bind-mounted from the host at `/usr/local/bin/claude`. Adjust the path in `docker-compose.yml` if it lives elsewhere on your system. Poller state is stored in a named Docker volume, so you do not need to pre-create `state.json` on the host.
 
 ---
 
@@ -95,8 +95,10 @@ Set `WA_DB_PATH` in `.env` to override. The DB is opened read-only by the poller
 }
 ```
 
-- **`last_seen_ts`** — ISO-8601 UTC timestamp. Only messages newer than this are considered. Advanced only after a successful Claude invocation; rolled back on failure so messages are retried.
-- **`sent_ids`** — IDs of outbound messages that Claude sent (detected by querying the DB after each invocation). Capped at the most recent **500** entries to prevent unbounded growth.
+- **`last_seen_ts`** — ISO-8601 UTC timestamp with microseconds. Used as a coarse global floor only.
+- **`sent_ids`** — IDs of outbound messages that Claude sent (detected by querying the DB after each invocation, filtered to the current chat and `is_from_me = 1`). Capped at the most recent **500** entries.
+- **`seen_ids`** — IDs of inbound messages already processed successfully, also capped as a sliding window to avoid duplicate handling when timestamps collide.
+- **`chat_watermarks`** — per-chat successful watermarks so one failing chat does not advance the others past unprocessed messages.
 
 On a **fresh start** (no `state.json`), `last_seen_ts` is set to the current time so existing history is not replayed. To replay from a specific point, set `last_seen_ts` manually.
 

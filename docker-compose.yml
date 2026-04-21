@@ -1,11 +1,10 @@
-version: "3.9"
-
 # ---------------------------------------------------------------------------
 # Shared volume so all three services read/write the same SQLite DB.
 # The whatsapp-bridge Go service owns the file; poller and mcp-server read it.
 # ---------------------------------------------------------------------------
 volumes:
   wa_store:
+  poller_state:
 
 services:
 
@@ -57,11 +56,11 @@ services:
       - /usr/local/bin/claude:/usr/local/bin/claude:ro
       # Mount the repo root so CLAUDE.md is found at BOT_WORKING_DIR.
       - .:/app/bot:ro
-      # Persist state.json outside the container.
-      - ./state.json:/app/state.json
+      # Persist state.json in a named volume so startup is not blocked by a missing host file.
+      - poller_state:/app/state
     environment:
       - WA_DB_PATH=/store/messages.db
-      - STATE_PATH=/app/state.json
+      - STATE_PATH=/app/state/state.json
       - BOT_WORKING_DIR=/app/bot
       - POLL_INTERVAL_SECONDS=${POLL_INTERVAL_SECONDS:-10}
       - HISTORY_MESSAGES=${HISTORY_MESSAGES:-10}

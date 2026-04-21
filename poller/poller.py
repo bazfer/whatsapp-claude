@@ -28,6 +28,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timezone
+from typing import Any
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -82,17 +83,16 @@ def save_state(path: str, state: dict) -> None:
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
-def iso_to_ts(iso: str) -> int:
-    """Parse ISO-8601 UTC string back to Unix epoch seconds."""
-    dt = datetime.strptime(iso, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
-    return int(dt.timestamp())
+def iso_to_ts(iso: str) -> float:
+    """Parse ISO-8601 UTC string back to epoch seconds with sub-second precision."""
+    return datetime.fromisoformat(iso).timestamp()
 
 
-def ts_to_iso(ts: int) -> str:
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+def ts_to_iso(ts: float) -> str:
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(timespec="microseconds")
 
 
 # ---------------------------------------------------------------------------
@@ -107,20 +107,24 @@ def _open_db(db_path: str) -> sqlite3.Connection:
     return con
 
 
-def query_new_messages(db_path: str, since_ts: int) -> list[dict]:
-    """Return messages with timestamp > since_ts, oldest first."""
+def query_new_messages(db_path: str, since_ts: float, seen_ids: set[str] | None = None, chat_jid: str | None = None) -> list[dict]:
+    """Return unseen messages with timestamp >= since_ts, oldest first."""
     try:
         con = _open_db(db_path)
-        cur = con.execute(
-            """
+        sql = """
             SELECT id, chat_jid, sender, content, timestamp, is_from_me
             FROM messages
-            WHERE timestamp > ?
-            ORDER BY timestamp ASC
-            """,
-            (since_ts,),
-        )
+            WHERE timestamp >= ?
+        """
+        params: list[Any] = [since_ts]
+        if chat_jid is not None:
+            sql += " AND chat_jid = ?"
+            params.append(chat_jid)
+        sql += " ORDER BY timestamp ASC, id ASC"
+        cur = con.execute(sql, params)
         rows = [dict(r) for r in cur.fetchall()]
+        if seen_ids:
+            rows = [r for r in rows if r["id"] not in seen_ids]
         con.close()
         return rows
     except Exception as e:
@@ -128,20 +132,27 @@ def query_new_messages(db_path: str, since_ts: int) -> list[dict]:
         return []
 
 
-def query_messages_since(db_path: str, since_ts: int) -> list[dict]:
-    """Return messages with timestamp >= since_ts (used to capture Claude's replies)."""
+def query_messages_since(db_path: str, since_ts: float, chat_jid: str | None = None, is_from_me: int | None = None, seen_ids: set[str] | None = None) -> list[dict]:
+    """Return messages with timestamp >= since_ts, with optional chat/from-me filters."""
     try:
         con = _open_db(db_path)
-        cur = con.execute(
-            """
+        sql = """
             SELECT id, chat_jid, sender, content, timestamp, is_from_me
             FROM messages
             WHERE timestamp >= ?
-            ORDER BY timestamp ASC
-            """,
-            (since_ts,),
-        )
+        """
+        params: list[Any] = [since_ts]
+        if chat_jid is not None:
+            sql += " AND chat_jid = ?"
+            params.append(chat_jid)
+        if is_from_me is not None:
+            sql += " AND is_from_me = ?"
+            params.append(is_from_me)
+        sql += " ORDER BY timestamp ASC, id ASC"
+        cur = con.execute(sql, params)
         rows = [dict(r) for r in cur.fetchall()]
+        if seen_ids:
+            rows = [r for r in rows if r["id"] not in seen_ids]
         con.close()
         return rows
     except Exception as e:
@@ -247,11 +258,11 @@ def cap_sent_ids(ids: list) -> list:
 # ---------------------------------------------------------------------------
 
 
-def process_chat(chat_jid: str, new_msgs: list[dict], state: dict) -> bool:
+def process_chat(chat_jid: str, new_msgs: list[dict], state: dict) -> tuple[bool, float | None]:
     """
     Build prompt, call claude, then detect Claude's outbound replies by querying
     the DB for messages that appeared after the invocation started.
-    Returns True if the invocation succeeded (state should be advanced).
+    Returns (success, watermark_ts_for_this_chat).
     """
     sent_ids: set = set(state.get("sent_ids", []))
 
@@ -260,16 +271,16 @@ def process_chat(chat_jid: str, new_msgs: list[dict], state: dict) -> bool:
     sender_jid = new_msgs[0].get("sender") or chat_jid
     prompt = build_prompt(sender_jid, history, new_msgs)
 
-    invocation_start = int(datetime.now(timezone.utc).timestamp())
+    invocation_start = datetime.now(timezone.utc).timestamp()
     log.info("Invoking claude for chat=%s (%d new message(s))", chat_jid, len(new_msgs))
 
     success = call_claude(prompt)
     if not success:
-        return False
+        return False, None
 
     # Detect Claude's replies: messages that appeared in the DB after invocation started
     # and are not already tracked. These are the outbound messages Claude sent via MCP.
-    post_rows = query_messages_since(WA_DB_PATH, invocation_start)
+    post_rows = query_messages_since(WA_DB_PATH, invocation_start, chat_jid=chat_jid, is_from_me=1, seen_ids=sent_ids)
     new_outbound = [
         r["id"] for r in post_rows
         if r["id"] not in sent_ids
@@ -280,7 +291,8 @@ def process_chat(chat_jid: str, new_msgs: list[dict], state: dict) -> bool:
 
     ids_list = cap_sent_ids(list(sent_ids))
     state["sent_ids"] = ids_list
-    return True
+    watermark_ts = max(msg["timestamp"] for msg in new_msgs)
+    return True, watermark_ts
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +310,10 @@ def run() -> None:
         log.info("Fresh start — anchoring last_seen_ts to %s", state["last_seen_ts"])
     if "sent_ids" not in state:
         state["sent_ids"] = []
+    if "chat_watermarks" not in state:
+        state["chat_watermarks"] = {}
+    if "seen_ids" not in state:
+        state["seen_ids"] = []
 
     save_state(STATE_PATH, state)
 
@@ -310,47 +326,50 @@ def run() -> None:
         try:
             since_iso = state["last_seen_ts"]
             since_ts = iso_to_ts(since_iso)
+            sent_ids = set(state.get("sent_ids", []))
+            seen_ids = set(state.get("seen_ids", []))
+            seen_message_ids = sent_ids | seen_ids
 
-            rows = query_new_messages(WA_DB_PATH, since_ts)
+            rows = query_new_messages(WA_DB_PATH, since_ts, seen_ids=seen_message_ids)
 
             if rows:
-                sent_ids = set(state.get("sent_ids", []))
-
-                # Group by chat, filter already-tracked sent IDs
-                # Because the bridge and phone share one WhatsApp account, all
-                # messages (inbound AND outbound) may appear in the DB. We rely
-                # solely on sent_ids to distinguish Claude's outbound echoes.
+                # Group by chat. We separately track outbound sent_ids and
+                # successfully-processed inbound seen_ids so >= timestamp polling
+                # does not duplicate work when multiple messages share a second.
                 chats: dict[str, list[dict]] = {}
-                max_ts = since_ts
+                chat_watermarks_raw = state.get("chat_watermarks", {})
+                chat_watermarks: dict[str, float] = {
+                    jid: iso_to_ts(ts) if isinstance(ts, str) else float(ts)
+                    for jid, ts in chat_watermarks_raw.items()
+                }
+                newly_seen_ids: set[str] = set()
+
                 for msg in rows:
-                    if msg["timestamp"] > max_ts:
-                        max_ts = msg["timestamp"]
-
-                    if msg["id"] in sent_ids:
-                        log.debug("Skipping known sent id=%s", msg["id"])
-                        continue
-
                     chats.setdefault(msg["chat_jid"], []).append(msg)
 
                 for chat_jid, msgs in chats.items():
                     try:
-                        ok = process_chat(chat_jid, msgs, state)
+                        ok, watermark_ts = process_chat(chat_jid, msgs, state)
                         if ok:
-                            # Only advance watermark when invocation succeeded
-                            state["last_seen_ts"] = ts_to_iso(max_ts)
+                            newly_seen_ids.update(msg["id"] for msg in msgs)
+                            if watermark_ts is not None:
+                                previous = chat_watermarks.get(chat_jid, since_ts)
+                                chat_watermarks[chat_jid] = max(previous, watermark_ts)
                         else:
                             log.warning(
-                                "Claude invocation failed for %s — last_seen_ts NOT advanced", chat_jid
+                                "Claude invocation failed for %s; chat watermark unchanged so messages retry",
+                                chat_jid,
                             )
                     except Exception as e:
                         log.error("Unhandled error processing chat %s: %s", chat_jid, e)
-                    finally:
-                        save_state(STATE_PATH, state)
 
-                # If no chats needed processing (all filtered), still advance watermark
-                if not chats and max_ts > since_ts:
-                    state["last_seen_ts"] = ts_to_iso(max_ts)
-                    save_state(STATE_PATH, state)
+                state["chat_watermarks"] = {
+                    jid: ts_to_iso(ts) for jid, ts in chat_watermarks.items()
+                }
+                state["seen_ids"] = cap_sent_ids(list(seen_ids | newly_seen_ids))
+                if chat_watermarks:
+                    state["last_seen_ts"] = ts_to_iso(max(chat_watermarks.values()))
+                save_state(STATE_PATH, state)
 
         except Exception as e:
             log.error("Poll cycle error: %s", e)
