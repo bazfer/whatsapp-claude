@@ -315,10 +315,7 @@ def process_chat(chat_jid: str, new_msgs: list[dict], state: dict) -> tuple[bool
     post_rows = query_messages_since(
         WA_DB_PATH, invocation_start, chat_jid=chat_jid, is_from_me=1, seen_ids=sent_ids
     )
-    new_outbound = [
-        r["id"] for r in post_rows
-        if r["id"] not in sent_ids
-    ]
+    new_outbound = [r["id"] for r in post_rows if r["id"] not in sent_ids]
     if new_outbound:
         log.info("Detected %d new outbound id(s) from Claude: %s", len(new_outbound), new_outbound)
         sent_ids.update(new_outbound)
@@ -353,7 +350,9 @@ def run() -> None:
 
     log.info(
         "Poller started. DB=%s interval=%ds cwd=%s",
-        WA_DB_PATH, POLL_INTERVAL, BOT_WORKING_DIR,
+        WA_DB_PATH,
+        POLL_INTERVAL,
+        BOT_WORKING_DIR,
     )
 
     while True:
@@ -369,8 +368,8 @@ def run() -> None:
             }
             newly_seen_ids: set[str] = set()
 
-            active_chats = (
-                set(query_active_chats(WA_DB_PATH, coarse_floor_ts)) | set(chat_watermarks.keys())
+            active_chats = set(query_active_chats(WA_DB_PATH, coarse_floor_ts)) | set(
+                chat_watermarks.keys()
             )
 
             for chat_jid in sorted(active_chats):
@@ -400,9 +399,7 @@ def run() -> None:
                 except Exception as e:
                     log.error("Unhandled error processing chat %s: %s", chat_jid, e)
 
-            state["chat_watermarks"] = {
-                jid: ts_to_iso(ts) for jid, ts in chat_watermarks.items()
-            }
+            state["chat_watermarks"] = {jid: ts_to_iso(ts) for jid, ts in chat_watermarks.items()}
             state["seen_ids"] = cap_sent_ids(list(seen_ids | newly_seen_ids))
             if chat_watermarks:
                 state["last_seen_ts"] = ts_to_iso(min(chat_watermarks.values()))
