@@ -76,7 +76,7 @@ build_bridge() {
   echo "Building whatsapp bridge..."
   (
     cd "$BRIDGE_DIR"
-    GOBIN="$BIN_DIR" go install .
+    go build -o "$BIN_DIR/whatsapp-bridge" .
   )
 }
 
