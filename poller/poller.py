@@ -312,7 +312,9 @@ def process_chat(chat_jid: str, new_msgs: list[dict], state: dict) -> tuple[bool
 
     # Detect Claude's replies: messages that appeared in the DB after invocation started
     # and are not already tracked. These are the outbound messages Claude sent via MCP.
-    post_rows = query_messages_since(WA_DB_PATH, invocation_start, chat_jid=chat_jid, is_from_me=1, seen_ids=sent_ids)
+    post_rows = query_messages_since(
+        WA_DB_PATH, invocation_start, chat_jid=chat_jid, is_from_me=1, seen_ids=sent_ids
+    )
     new_outbound = [
         r["id"] for r in post_rows
         if r["id"] not in sent_ids
@@ -367,7 +369,9 @@ def run() -> None:
             }
             newly_seen_ids: set[str] = set()
 
-            active_chats = set(query_active_chats(WA_DB_PATH, coarse_floor_ts)) | set(chat_watermarks.keys())
+            active_chats = (
+                set(query_active_chats(WA_DB_PATH, coarse_floor_ts)) | set(chat_watermarks.keys())
+            )
 
             for chat_jid in sorted(active_chats):
                 try:
@@ -390,7 +394,7 @@ def run() -> None:
                         chat_watermarks[chat_jid] = max(previous, watermark_ts)
                     else:
                         log.warning(
-                            "Claude invocation failed for %s; chat watermark unchanged so messages retry",
+                            "Claude invocation failed for %s; watermark unchanged, messages will retry",
                             chat_jid,
                         )
                 except Exception as e:
