@@ -1,0 +1,6 @@
+# All runtime dependencies are Python stdlib (sqlite3, subprocess, json, logging, etc.)
+# No third-party packages required for the poller.
+#
+# Dev / tooling (optional):
+# ruff          # linter
+# mypy          # type checking

@@ -1,0 +1,366 @@
+#!/usr/bin/env python3
+"""
+WhatsApp polling daemon.
+
+Watches the whatsapp-bridge SQLite DB for new messages and invokes
+`claude -p` so Claude can reply via the send_message MCP tool.
+
+DB schema assumptions (adjust if bridge schema changes):
+  Table: messages
+  Columns:
+    id          TEXT  PRIMARY KEY
+    chat_jid    TEXT  — full JID, e.g. "5491112223333@s.whatsapp.net"
+    sender      TEXT  — JID of the sender (may equal chat_jid for 1-1 chats)
+    content     TEXT  — message body
+    timestamp   INTEGER — Unix epoch seconds
+    is_from_me  INTEGER — 1 if sent by the local account, 0 otherwise
+
+  Table: chats (optional, not required for core operation)
+    jid   TEXT PRIMARY KEY
+    name  TEXT
+"""
+
+import json
+import logging
+import os
+import sqlite3
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Configuration (env vars with defaults)
+# ---------------------------------------------------------------------------
+
+POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SECONDS", "10"))
+HISTORY_MESSAGES = int(os.environ.get("HISTORY_MESSAGES", "10"))
+BOT_WORKING_DIR = os.environ.get("BOT_WORKING_DIR", str(Path(__file__).parent.parent))
+WA_DB_PATH = os.environ.get("WA_DB_PATH", "/home/deet/whatsapp-mcp/whatsapp-bridge/store/messages.db")
+STATE_PATH = os.environ.get("STATE_PATH", "./state.json")
+
+CLAUDE_TIMEOUT = int(os.environ.get("CLAUDE_TIMEOUT_SECONDS", "60"))
+SENT_IDS_CAP = 500
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+)
+log = logging.getLogger("poller")
+
+# ---------------------------------------------------------------------------
+# State helpers
+# ---------------------------------------------------------------------------
+
+
+def load_state(path: str) -> dict:
+    """Load persisted state or return empty dict on first run."""
+    try:
+        with open(path) as f:
+            state = json.load(f)
+        log.info("Loaded state from %s (last_seen_ts=%s)", path, state.get("last_seen_ts"))
+        return state
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        log.warning("Could not read state file %s: %s — starting fresh", path, e)
+        return {}
+
+
+def save_state(path: str, state: dict) -> None:
+    """Atomic write: write to .tmp then rename."""
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(state, f, indent=2)
+    os.replace(tmp, path)
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def iso_to_ts(iso: str) -> int:
+    """Parse ISO-8601 UTC string back to Unix epoch seconds."""
+    dt = datetime.strptime(iso, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+    return int(dt.timestamp())
+
+
+def ts_to_iso(ts: int) -> str:
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+# ---------------------------------------------------------------------------
+# DB queries
+# ---------------------------------------------------------------------------
+
+
+def _open_db(db_path: str) -> sqlite3.Connection:
+    # Open read-only via URI; raises OperationalError if file missing
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    con.row_factory = sqlite3.Row
+    return con
+
+
+def query_new_messages(db_path: str, since_ts: int) -> list[dict]:
+    """Return messages with timestamp > since_ts, oldest first."""
+    try:
+        con = _open_db(db_path)
+        cur = con.execute(
+            """
+            SELECT id, chat_jid, sender, content, timestamp, is_from_me
+            FROM messages
+            WHERE timestamp > ?
+            ORDER BY timestamp ASC
+            """,
+            (since_ts,),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+        con.close()
+        return rows
+    except Exception as e:
+        log.error("DB query (new messages) failed: %s", e)
+        return []
+
+
+def query_messages_since(db_path: str, since_ts: int) -> list[dict]:
+    """Return messages with timestamp >= since_ts (used to capture Claude's replies)."""
+    try:
+        con = _open_db(db_path)
+        cur = con.execute(
+            """
+            SELECT id, chat_jid, sender, content, timestamp, is_from_me
+            FROM messages
+            WHERE timestamp >= ?
+            ORDER BY timestamp ASC
+            """,
+            (since_ts,),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+        con.close()
+        return rows
+    except Exception as e:
+        log.error("DB query (since) failed: %s", e)
+        return []
+
+
+def query_history(db_path: str, chat_jid: str, limit: int) -> list[dict]:
+    """Return the last `limit` messages for a chat, oldest first."""
+    try:
+        con = _open_db(db_path)
+        cur = con.execute(
+            """
+            SELECT id, sender, content, timestamp, is_from_me
+            FROM messages
+            WHERE chat_jid = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+            """,
+            (chat_jid, limit),
+        )
+        rows = list(reversed([dict(r) for r in cur.fetchall()]))
+        con.close()
+        return rows
+    except Exception as e:
+        log.error("DB history query failed for %s: %s", chat_jid, e)
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Prompt building
+# ---------------------------------------------------------------------------
+
+
+def _fmt_msg(msg: dict) -> str:
+    ts = datetime.fromtimestamp(msg["timestamp"], tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    role = "me" if msg["is_from_me"] else msg.get("sender", "them")
+    return f"[{ts}] {role}: {msg.get('content', '')}"
+
+
+def build_prompt(sender_jid: str, history: list[dict], new_msgs: list[dict]) -> str:
+    history_text = "\n".join(_fmt_msg(m) for m in history) if history else "(no prior history)"
+    new_text = "\n".join(_fmt_msg(m) for m in new_msgs)
+    n = HISTORY_MESSAGES
+    return (
+        f"You are a WhatsApp assistant. A new message arrived. "
+        f"Reply using the send_message MCP tool.\n\n"
+        f"Recipient: {sender_jid}\n\n"
+        f"Recent conversation (last {n} messages):\n{history_text}\n\n"
+        f"New message: {new_text}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Claude invocation
+# ---------------------------------------------------------------------------
+
+
+def call_claude(prompt: str) -> bool:
+    """
+    Invoke `claude -p <prompt> --no-markdown` from BOT_WORKING_DIR.
+    Claude is expected to call send_message via MCP; we do NOT parse stdout.
+    Returns True if claude exited 0, False otherwise.
+    """
+    try:
+        result = subprocess.run(
+            ["claude", "-p", prompt, "--no-markdown"],
+            cwd=BOT_WORKING_DIR,
+            capture_output=True,
+            text=True,
+            timeout=CLAUDE_TIMEOUT,
+        )
+        if result.returncode != 0:
+            log.error("claude exited %d: %s", result.returncode, result.stderr.strip()[:400])
+            return False
+        log.debug("claude stdout: %s", result.stdout.strip()[:200])
+        return True
+    except FileNotFoundError:
+        log.error("`claude` CLI not found — is it on PATH?")
+        return False
+    except subprocess.TimeoutExpired:
+        log.error("claude timed out after %ds for chat (prompt truncated): %s…", CLAUDE_TIMEOUT, prompt[:80])
+        return False
+    except Exception as e:
+        log.error("Unexpected error calling claude: %s", e)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# sent_ids management
+# ---------------------------------------------------------------------------
+
+
+def cap_sent_ids(ids: list) -> list:
+    """Keep only the most recent SENT_IDS_CAP entries."""
+    if len(ids) > SENT_IDS_CAP:
+        return ids[-SENT_IDS_CAP:]
+    return ids
+
+
+# ---------------------------------------------------------------------------
+# Per-chat processing
+# ---------------------------------------------------------------------------
+
+
+def process_chat(chat_jid: str, new_msgs: list[dict], state: dict) -> bool:
+    """
+    Build prompt, call claude, then detect Claude's outbound replies by querying
+    the DB for messages that appeared after the invocation started.
+    Returns True if the invocation succeeded (state should be advanced).
+    """
+    sent_ids: set = set(state.get("sent_ids", []))
+
+    history = query_history(WA_DB_PATH, chat_jid, HISTORY_MESSAGES)
+    # Use the sender JID of the first new message as the reply target
+    sender_jid = new_msgs[0].get("sender") or chat_jid
+    prompt = build_prompt(sender_jid, history, new_msgs)
+
+    invocation_start = int(datetime.now(timezone.utc).timestamp())
+    log.info("Invoking claude for chat=%s (%d new message(s))", chat_jid, len(new_msgs))
+
+    success = call_claude(prompt)
+    if not success:
+        return False
+
+    # Detect Claude's replies: messages that appeared in the DB after invocation started
+    # and are not already tracked. These are the outbound messages Claude sent via MCP.
+    post_rows = query_messages_since(WA_DB_PATH, invocation_start)
+    new_outbound = [
+        r["id"] for r in post_rows
+        if r["id"] not in sent_ids
+    ]
+    if new_outbound:
+        log.info("Detected %d new outbound id(s) from Claude: %s", len(new_outbound), new_outbound)
+        sent_ids.update(new_outbound)
+
+    ids_list = cap_sent_ids(list(sent_ids))
+    state["sent_ids"] = ids_list
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Main loop
+# ---------------------------------------------------------------------------
+
+
+def run() -> None:
+    state = load_state(STATE_PATH)
+
+    # On fresh start anchor to now so we don't replay history.
+    # If state.json exists, last_seen_ts is already set.
+    if "last_seen_ts" not in state:
+        state["last_seen_ts"] = now_iso()
+        log.info("Fresh start — anchoring last_seen_ts to %s", state["last_seen_ts"])
+    if "sent_ids" not in state:
+        state["sent_ids"] = []
+
+    save_state(STATE_PATH, state)
+
+    log.info(
+        "Poller started. DB=%s interval=%ds cwd=%s",
+        WA_DB_PATH, POLL_INTERVAL, BOT_WORKING_DIR,
+    )
+
+    while True:
+        try:
+            since_iso = state["last_seen_ts"]
+            since_ts = iso_to_ts(since_iso)
+
+            rows = query_new_messages(WA_DB_PATH, since_ts)
+
+            if rows:
+                sent_ids = set(state.get("sent_ids", []))
+
+                # Group by chat, filter already-tracked sent IDs
+                # Because the bridge and phone share one WhatsApp account, all
+                # messages (inbound AND outbound) may appear in the DB. We rely
+                # solely on sent_ids to distinguish Claude's outbound echoes.
+                chats: dict[str, list[dict]] = {}
+                max_ts = since_ts
+                for msg in rows:
+                    if msg["timestamp"] > max_ts:
+                        max_ts = msg["timestamp"]
+
+                    if msg["id"] in sent_ids:
+                        log.debug("Skipping known sent id=%s", msg["id"])
+                        continue
+
+                    chats.setdefault(msg["chat_jid"], []).append(msg)
+
+                for chat_jid, msgs in chats.items():
+                    try:
+                        ok = process_chat(chat_jid, msgs, state)
+                        if ok:
+                            # Only advance watermark when invocation succeeded
+                            state["last_seen_ts"] = ts_to_iso(max_ts)
+                        else:
+                            log.warning(
+                                "Claude invocation failed for %s — last_seen_ts NOT advanced", chat_jid
+                            )
+                    except Exception as e:
+                        log.error("Unhandled error processing chat %s: %s", chat_jid, e)
+                    finally:
+                        save_state(STATE_PATH, state)
+
+                # If no chats needed processing (all filtered), still advance watermark
+                if not chats and max_ts > since_ts:
+                    state["last_seen_ts"] = ts_to_iso(max_ts)
+                    save_state(STATE_PATH, state)
+
+        except Exception as e:
+            log.error("Poll cycle error: %s", e)
+
+        time.sleep(POLL_INTERVAL)
+
+
+if __name__ == "__main__":
+    try:
+        run()
+    except KeyboardInterrupt:
+        log.info("Poller stopped by user")
+        sys.exit(0)
