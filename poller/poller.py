@@ -38,7 +38,9 @@ from pathlib import Path
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SECONDS", "10"))
 HISTORY_MESSAGES = int(os.environ.get("HISTORY_MESSAGES", "10"))
 BOT_WORKING_DIR = os.environ.get("BOT_WORKING_DIR", str(Path(__file__).parent.parent))
-WA_DB_PATH = os.environ.get("WA_DB_PATH", "/home/deet/whatsapp-mcp/whatsapp-bridge/store/messages.db")
+WA_DB_PATH = os.environ.get(
+    "WA_DB_PATH", "/home/deet/whatsapp-mcp/whatsapp-bridge/store/messages.db"
+)
 STATE_PATH = os.environ.get("STATE_PATH", "./state.json")
 
 CLAUDE_TIMEOUT = int(os.environ.get("CLAUDE_TIMEOUT_SECONDS", "60"))
@@ -107,7 +109,9 @@ def _open_db(db_path: str) -> sqlite3.Connection:
     return con
 
 
-def query_new_messages(db_path: str, since_ts: float, seen_ids: set[str] | None = None, chat_jid: str | None = None) -> list[dict]:
+def query_new_messages(
+    db_path: str, since_ts: float, seen_ids: set[str] | None = None, chat_jid: str | None = None
+) -> list[dict]:
     """Return unseen messages with timestamp >= since_ts, oldest first."""
     try:
         con = _open_db(db_path)
@@ -133,7 +137,13 @@ def query_new_messages(db_path: str, since_ts: float, seen_ids: set[str] | None 
         return []
 
 
-def query_messages_since(db_path: str, since_ts: float, chat_jid: str | None = None, is_from_me: int | None = None, seen_ids: set[str] | None = None) -> list[dict]:
+def query_messages_since(
+    db_path: str,
+    since_ts: float,
+    chat_jid: str | None = None,
+    is_from_me: int | None = None,
+    seen_ids: set[str] | None = None,
+) -> list[dict]:
     """Return messages with timestamp >= since_ts, with optional chat/from-me filters."""
     try:
         con = _open_db(db_path)
@@ -256,7 +266,7 @@ def call_claude(prompt: str) -> bool:
         log.error("`claude` CLI not found — is it on PATH?")
         return False
     except subprocess.TimeoutExpired:
-        log.error("claude timed out after %ds for chat (prompt truncated): %s…", CLAUDE_TIMEOUT, prompt[:80])
+        log.error("claude timed out after %ds (prompt truncated): %s…", CLAUDE_TIMEOUT, prompt[:80])
         return False
     except Exception as e:
         log.error("Unexpected error calling claude: %s", e)
