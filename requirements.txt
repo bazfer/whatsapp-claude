@@ -1,6 +1,12 @@
-# All runtime dependencies are Python stdlib (sqlite3, subprocess, json, logging, etc.)
-# No third-party packages required for the poller.
-#
-# Dev / tooling (optional):
-# ruff          # linter
-# mypy          # type checking
+# Poller: all runtime deps are Python stdlib — no packages required.
+
+# Webhook transport (Twilio ingress)
+fastapi>=0.110
+uvicorn[standard]>=0.27
+twilio>=8.0
+
+# Test / dev
+httpx>=0.27       # required by FastAPI TestClient
+pytest>=8.0
+ruff
+mypy

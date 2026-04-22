@@ -18,8 +18,8 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install tooling
-        run: pip install ruff mypy pytest
+      - name: Install tooling and dependencies
+        run: pip install -r requirements.txt
 
       - name: Lint (ruff check)
         run: ruff check .
@@ -33,5 +33,5 @@ jobs:
       - name: Validate docker-compose
         run: docker compose config
 
-      - name: Collect tests (pytest)
-        run: pytest --co -q
+      - name: Run tests (pytest)
+        run: pytest -q
