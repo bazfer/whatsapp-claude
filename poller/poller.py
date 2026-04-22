@@ -407,10 +407,10 @@ def run() -> None:
             active_chats = set(query_active_chats(WA_DB_PATH, coarse_floor_ts)) | set(
                 chat_watermarks.keys()
             )
+            if ALLOWED_CHATS is not None:
+                active_chats &= ALLOWED_CHATS
 
             for chat_jid in sorted(active_chats):
-                if ALLOWED_CHATS is not None and chat_jid not in ALLOWED_CHATS:
-                    continue
                 try:
                     chat_since = chat_watermarks.get(chat_jid, coarse_floor_ts)
                     chat_seen_ids = sent_ids | seen_ids | newly_seen_ids
