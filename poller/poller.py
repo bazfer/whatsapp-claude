@@ -26,7 +26,9 @@ import os
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
+import urllib.request
 from datetime import datetime, timezone
 from typing import Any
 from pathlib import Path
@@ -44,6 +46,7 @@ WA_DB_PATH = os.environ.get(
 STATE_PATH = os.environ.get("STATE_PATH", "./state.json")
 
 CLAUDE_TIMEOUT = int(os.environ.get("CLAUDE_TIMEOUT_SECONDS", "60"))
+WHATSAPP_API_URL = os.environ.get("WHATSAPP_API_URL", "http://127.0.0.1:8080/api")
 SENT_IDS_CAP = 500
 _allowed_raw = os.environ.get("ALLOWED_CHATS", "")
 ALLOWED_CHATS: set[str] | None = (
@@ -309,6 +312,27 @@ def call_claude(prompt: str) -> bool:
         return False
 
 
+def set_typing_indicator(chat_jid: str, is_typing: bool, timeout: float = 10) -> None:
+    payload = json.dumps({"recipient": chat_jid, "is_typing": is_typing}).encode()
+    req = urllib.request.Request(
+        f"{WHATSAPP_API_URL}/typing",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout):
+        pass
+
+
+def typing_indicator_loop(chat_jid: str, stop_event: threading.Event) -> None:
+    while not stop_event.is_set():
+        try:
+            set_typing_indicator(chat_jid, True)
+        except Exception as e:
+            log.debug("typing indicator error: %s", e)
+        stop_event.wait(4)
+
+
 # ---------------------------------------------------------------------------
 # sent_ids management
 # ---------------------------------------------------------------------------
@@ -342,7 +366,22 @@ def process_chat(chat_jid: str, new_msgs: list[dict], state: dict) -> tuple[bool
     invocation_start = datetime.now(timezone.utc).timestamp()
     log.info("Invoking claude for chat=%s (%d new message(s))", chat_jid, len(new_msgs))
 
-    success = call_claude(prompt)
+    typing_stop = threading.Event()
+    typing_thread = threading.Thread(
+        target=typing_indicator_loop,
+        args=(chat_jid, typing_stop),
+        daemon=True,
+    )
+    typing_thread.start()
+    try:
+        success = call_claude(prompt)
+    finally:
+        typing_stop.set()
+        typing_thread.join(timeout=5)
+        try:
+            set_typing_indicator(chat_jid, False, timeout=2)
+        except Exception as e:
+            log.debug("typing indicator clear error: %s", e)
     if not success:
         return False, None
 
