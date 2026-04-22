@@ -329,8 +329,8 @@ def typing_indicator_loop(chat_jid: str, stop_event: threading.Event) -> None:
     while not stop_event.is_set():
         try:
             set_typing_indicator(chat_jid, True)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("typing indicator error: %s", e)
         stop_event.wait(4)
 
 # ---------------------------------------------------------------------------
