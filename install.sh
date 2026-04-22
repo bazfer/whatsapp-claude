@@ -174,7 +174,6 @@ WantedBy=default.target"
 }
 
 install_webhook_service() {
-  # Webhook prompts explicitly override CLAUDE.md transport mode and require stdout replies.
   local bot_dir="${BOT_WORKING_DIR:-$REPO_ROOT}"
 
   write_service "whatsapp-webhook" "[Unit]

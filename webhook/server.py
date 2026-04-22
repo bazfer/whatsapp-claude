@@ -1,5 +1,6 @@
 import logging
 import os
+import pathlib
 import sqlite3
 import subprocess
 import uuid
@@ -12,11 +13,12 @@ from twilio.request_validator import RequestValidator
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
+_WEBHOOK_DIR = str(pathlib.Path(__file__).parent)
 TWILIO_AUTH_TOKEN: str | None = os.getenv("TWILIO_AUTH_TOKEN")
 PUBLIC_WEBHOOK_URL: str = os.getenv("PUBLIC_WEBHOOK_URL", "")
 WEBHOOK_DB_PATH: str = os.getenv("WEBHOOK_DB_PATH", "webhook_messages.db")
 HISTORY_MESSAGES: int = int(os.getenv("HISTORY_MESSAGES", "10"))
-BOT_WORKING_DIR: str = os.getenv("BOT_WORKING_DIR", ".")
+BOT_WORKING_DIR: str = os.getenv("BOT_WORKING_DIR", _WEBHOOK_DIR)
 CLAUDE_TIMEOUT: int = int(os.getenv("CLAUDE_TIMEOUT_SECONDS", "60"))
 _allowed_raw = os.getenv("ALLOWED_CHATS", "")
 ALLOWED_CHATS: set[str] = (
