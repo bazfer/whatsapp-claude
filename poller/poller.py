@@ -312,7 +312,6 @@ def call_claude(prompt: str) -> bool:
         return False
 
 
-
 def set_typing_indicator(chat_jid: str, is_typing: bool) -> None:
     payload = json.dumps({"recipient": chat_jid, "is_typing": is_typing}).encode()
     req = urllib.request.Request(
@@ -332,6 +331,7 @@ def typing_indicator_loop(chat_jid: str, stop_event: threading.Event) -> None:
         except Exception as e:
             log.debug("typing indicator error: %s", e)
         stop_event.wait(4)
+
 
 # ---------------------------------------------------------------------------
 # sent_ids management
