@@ -96,7 +96,7 @@ setup_webhook_venv() {
   echo "Setting up webhook virtualenv..."
   python3 -m venv "$WEBHOOK_VENV_DIR"
   "$WEBHOOK_VENV_DIR/bin/pip" install --upgrade pip
-  "$WEBHOOK_VENV_DIR/bin/pip" install "fastapi>=0.110" "uvicorn[standard]>=0.27" "twilio>=8.0"
+  "$WEBHOOK_VENV_DIR/bin/pip" install "fastapi>=0.111" "uvicorn[standard]>=0.29" "twilio>=9.0" "python-multipart>=0.0.9"
 }
 
 write_service() {
@@ -174,6 +174,7 @@ WantedBy=default.target"
 }
 
 install_webhook_service() {
+  # Webhook prompts explicitly override CLAUDE.md transport mode and require stdout replies.
   local bot_dir="${BOT_WORKING_DIR:-$REPO_ROOT}"
 
   write_service "whatsapp-webhook" "[Unit]
