@@ -6,3 +6,7 @@ store/
 poller/__pycache__/
 **/__pycache__/
 *.pyc
+
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
