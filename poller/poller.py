@@ -312,7 +312,7 @@ def call_claude(prompt: str) -> bool:
         return False
 
 
-def set_typing_indicator(chat_jid: str, is_typing: bool) -> None:
+def set_typing_indicator(chat_jid: str, is_typing: bool, timeout: float = 10) -> None:
     payload = json.dumps({"recipient": chat_jid, "is_typing": is_typing}).encode()
     req = urllib.request.Request(
         f"{WHATSAPP_API_URL}/typing",
@@ -320,7 +320,7 @@ def set_typing_indicator(chat_jid: str, is_typing: bool) -> None:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=10):
+    with urllib.request.urlopen(req, timeout=timeout):
         pass
 
 
@@ -377,10 +377,11 @@ def process_chat(chat_jid: str, new_msgs: list[dict], state: dict) -> tuple[bool
         success = call_claude(prompt)
     finally:
         typing_stop.set()
+        typing_thread.join(timeout=5)
         try:
-            set_typing_indicator(chat_jid, False)
-        except Exception:
-            pass
+            set_typing_indicator(chat_jid, False, timeout=2)
+        except Exception as e:
+            log.debug("typing indicator clear error: %s", e)
     if not success:
         return False, None
 
