@@ -45,6 +45,10 @@ STATE_PATH = os.environ.get("STATE_PATH", "./state.json")
 
 CLAUDE_TIMEOUT = int(os.environ.get("CLAUDE_TIMEOUT_SECONDS", "60"))
 SENT_IDS_CAP = 500
+_allowed_raw = os.environ.get("ALLOWED_CHATS", "")
+ALLOWED_CHATS: set[str] | None = (
+    {j.strip() for j in _allowed_raw.split(",") if j.strip()} if _allowed_raw else None
+)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -403,6 +407,8 @@ def run() -> None:
             active_chats = set(query_active_chats(WA_DB_PATH, coarse_floor_ts)) | set(
                 chat_watermarks.keys()
             )
+            if ALLOWED_CHATS is not None:
+                active_chats &= ALLOWED_CHATS
 
             for chat_jid in sorted(active_chats):
                 try:
