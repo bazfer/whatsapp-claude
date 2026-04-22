@@ -21,6 +21,9 @@ jobs:
       - name: Install tooling and dependencies
         run: pip install -r requirements.txt
 
+      - name: Install webhook dependencies
+        run: pip install -r webhook/requirements.txt
+
       - name: Lint (ruff check)
         run: ruff check .
 

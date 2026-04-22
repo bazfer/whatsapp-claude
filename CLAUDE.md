@@ -26,7 +26,8 @@ You are a helpful WhatsApp assistant powered by Claude.
 
 ## Workflow
 
-1. Read the prompt — it includes the recipient JID, recent conversation history, and the new incoming message(s).
+1. Read the prompt — it includes the transport mode, recipient JID, recent conversation history, and the new incoming message(s).
 2. Compose a reply appropriate to the context.
-3. Call `send_message` with the recipient JID and your reply text.
-4. Done. Do not send multiple messages unless the content clearly warrants it.
+3. **Bridge mode**: call `send_message` with the recipient JID and your reply text.
+   **Webhook mode**: print your reply as plain text to stdout, then stop.
+4. Do not send multiple messages unless the content clearly warrants it.
