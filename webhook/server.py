@@ -119,7 +119,11 @@ def _query_history(path: str, chat_jid: str, exclude_id: str) -> list[dict]:
 
 
 def _twiml_message(body: str) -> str:
-    return f'<?xml version="1.0" encoding="UTF-8"?><Response><Message>{escape(body)}</Message></Response>'
+    escaped_body = escape(body)
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        f"<Response><Message>{escaped_body}</Message></Response>"
+    )
 
 
 @app.on_event("startup")
@@ -210,4 +214,6 @@ async def webhook(request: Request) -> Response:
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host=os.getenv("WEBHOOK_HOST", "0.0.0.0"), port=int(os.getenv("WEBHOOK_PORT", "8000")))
+    uvicorn.run(
+        app, host=os.getenv("WEBHOOK_HOST", "0.0.0.0"), port=int(os.getenv("WEBHOOK_PORT", "8000"))
+    )

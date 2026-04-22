@@ -248,6 +248,8 @@ main() {
   ensure_env_file
 
   if [ "$TRANSPORT" = "twilio" ]; then
+    [ -n "${TWILIO_AUTH_TOKEN:-}" ] || err "TWILIO_AUTH_TOKEN must be set in .env for --transport twilio"
+    [ -n "${PUBLIC_WEBHOOK_URL:-}" ] || err "PUBLIC_WEBHOOK_URL must be set in .env for --transport twilio"
     setup_webhook_venv
     install_webhook_service
     start_webhook_service

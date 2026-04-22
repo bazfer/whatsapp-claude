@@ -65,11 +65,15 @@ def test_valid_post_disallowed_jid_returns_empty(tmp_path, monkeypatch):
     server._init_db(db_path)
     c = TestClient(server.app)
 
-    with patch("webhook.server.RequestValidator", _mock_validator(True)):
+    with (
+        patch("webhook.server.RequestValidator", _mock_validator(True)),
+        patch("subprocess.run") as mock_run,
+    ):
         r = c.post("/webhook", data=FORM_DATA, headers={"X-Twilio-Signature": "sig"})
 
     assert r.status_code == 200
     assert r.text.strip() == server.EMPTY_TWIML
+    mock_run.assert_not_called()
 
 
 def test_wrong_signature_returns_403(client):
