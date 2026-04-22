@@ -18,7 +18,7 @@ Requirements:
 ### 1. Clone
 
 ```bash
-git clone --recurse-submodules https://github.com/Agent-Crafting-Table/whatsapp-claude.git
+git clone --recurse-submodules https://github.com/bazfer/whatsapp-claude.git
 cd whatsapp-claude
 ```
 
