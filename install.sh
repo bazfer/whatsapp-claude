@@ -7,12 +7,15 @@ BRIDGE_DIR="$SUBMODULE_DIR/whatsapp-bridge"
 MCP_DIR="$SUBMODULE_DIR/whatsapp-mcp-server"
 BIN_DIR="$REPO_ROOT/.local/bin"
 VENV_DIR="$REPO_ROOT/.venvs/whatsapp-mcp-server"
+WEBHOOK_VENV_DIR="$REPO_ROOT/.venvs/webhook"
 STORE_DIR="$BRIDGE_DIR/store"
 WHATSAPP_SUBMODULE_DB="$STORE_DIR/messages.db"
 SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 ENV_FILE="$REPO_ROOT/.env"
 BRIDGE_BIN="$BIN_DIR/whatsapp-bridge"
 POLLER_BIN="${PYTHON_BIN:-python3}"
+
+TRANSPORT="bridge"
 
 err() {
   echo "Error: $*" >&2
@@ -89,6 +92,13 @@ setup_mcp_venv() {
   "$VENV_DIR/bin/pip" install "anyio<4.9"
 }
 
+setup_webhook_venv() {
+  echo "Setting up webhook virtualenv..."
+  python3 -m venv "$WEBHOOK_VENV_DIR"
+  "$WEBHOOK_VENV_DIR/bin/pip" install --upgrade pip
+  "$WEBHOOK_VENV_DIR/bin/pip" install "fastapi>=0.111" "uvicorn[standard]>=0.29" "twilio>=9.0" "python-multipart>=0.0.9"
+}
+
 write_service() {
   local name="$1"
   local content="$2"
@@ -96,7 +106,7 @@ write_service() {
   printf '%s\n' "$content" > "$SYSTEMD_USER_DIR/$name.service"
 }
 
-install_services() {
+install_bridge_services() {
   local bridge_port="${WHATSAPP_BRIDGE_PORT:-8080}"
   local api_url="${WHATSAPP_API_URL:-http://127.0.0.1:${bridge_port}/api}"
   local db_path="${WA_DB_PATH:-$WHATSAPP_SUBMODULE_DB}"
@@ -163,6 +173,29 @@ WantedBy=default.target"
   systemctl --user enable whatsapp-bridge.service whatsapp-mcp-server.service whatsapp-poller.service
 }
 
+install_webhook_service() {
+  local bot_dir="${BOT_WORKING_DIR:-$REPO_ROOT}"
+
+  write_service "whatsapp-webhook" "[Unit]
+Description=WhatsApp Twilio webhook
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=$REPO_ROOT
+EnvironmentFile=$ENV_FILE
+Environment=BOT_WORKING_DIR=$bot_dir
+ExecStart=$WEBHOOK_VENV_DIR/bin/python $REPO_ROOT/webhook/server.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target"
+
+  systemctl --user daemon-reload
+  systemctl --user enable whatsapp-webhook.service
+}
+
 first_auth() {
   mkdir -p "$STORE_DIR"
   if [ -f "$STORE_DIR/whatsmeow.db" ]; then
@@ -177,25 +210,60 @@ first_auth() {
   )
 }
 
-start_services() {
+start_bridge_services() {
   systemctl --user restart whatsapp-bridge.service
   sleep 2
   systemctl --user restart whatsapp-mcp-server.service whatsapp-poller.service
 }
 
+start_webhook_service() {
+  systemctl --user restart whatsapp-webhook.service
+}
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --transport)
+        TRANSPORT="${2:-}"
+        shift 2
+        ;;
+      *)
+        err "Unknown option: $1"
+        ;;
+    esac
+  done
+
+  case "$TRANSPORT" in
+    bridge | twilio) ;;
+    *) err "Unknown transport '$TRANSPORT'. Valid values: bridge, twilio" ;;
+  esac
+}
+
 main() {
-  check_go
+  parse_args "$@"
+
   check_python
   check_required_tools
   check_systemd_user
   ensure_env_file
-  sync_submodule
-  build_bridge
-  setup_mcp_venv
-  install_services
-  first_auth
-  start_services
-  echo "Install complete. Check status with: systemctl --user status whatsapp-bridge whatsapp-mcp-server whatsapp-poller"
+
+  if [ "$TRANSPORT" = "twilio" ]; then
+    [ -n "${TWILIO_AUTH_TOKEN:-}" ] || err "TWILIO_AUTH_TOKEN must be set in .env for --transport twilio"
+    [ -n "${PUBLIC_WEBHOOK_URL:-}" ] || err "PUBLIC_WEBHOOK_URL must be set in .env for --transport twilio"
+    setup_webhook_venv
+    install_webhook_service
+    start_webhook_service
+    echo "Install complete (twilio). Check status with: systemctl --user status whatsapp-webhook"
+  else
+    check_go
+    sync_submodule
+    build_bridge
+    setup_mcp_venv
+    install_bridge_services
+    first_auth
+    start_bridge_services
+    echo "Install complete (bridge). Check status with: systemctl --user status whatsapp-bridge whatsapp-mcp-server whatsapp-poller"
+  fi
 }
 
 main "$@"
