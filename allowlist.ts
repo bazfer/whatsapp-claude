@@ -104,6 +104,12 @@ export async function issuePairingCode(from: string): Promise<string> {
   return code;
 }
 
+export async function hasPendingPairingCode(from: string): Promise<boolean> {
+  const normalized = normalizeWhatsAppAddress(from);
+  const pending = await readPending();
+  return pending.pairings.some((p) => p.from === normalized);
+}
+
 export async function allowWithPairingCode(from: string, code: string): Promise<boolean> {
   const normalized = normalizeWhatsAppAddress(from);
   const pending = await readPending();

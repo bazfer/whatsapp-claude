@@ -1,6 +1,38 @@
 import twilio from "twilio";
 import { chunkMessage } from "./chunker";
 
+export const DEFAULT_MAX_MEDIA_BYTES = 10 * 1024 * 1024;
+
+export type DownloadMediaOptions = {
+  maxBytes?: number;
+  allowedContentTypes?: readonly string[];
+};
+
+export type DownloadedMedia = {
+  bytes: Uint8Array;
+  contentType: string;
+};
+
+function mediaLimitFromEnv(): number {
+  const raw = process.env.WA_CHANNEL_MAX_MEDIA_BYTES;
+  if (!raw) return DEFAULT_MAX_MEDIA_BYTES;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error("WA_CHANNEL_MAX_MEDIA_BYTES must be a positive integer");
+  }
+  return parsed;
+}
+
+function isAllowedContentType(contentType: string, allowed?: readonly string[]): boolean {
+  if (!allowed || allowed.length === 0) return true;
+  const normalized = contentType.split(";")[0]?.trim().toLowerCase() ?? "";
+  return allowed.some((entry) => {
+    const rule = entry.toLowerCase();
+    if (rule.endsWith("/*")) return normalized.startsWith(rule.slice(0, -1));
+    return normalized === rule;
+  });
+}
+
 export type TwilioConfig = {
   accountSid: string;
   authToken: string;
@@ -51,7 +83,8 @@ export class TwilioWhatsAppClient {
     return results;
   }
 
-  async downloadMedia(mediaUrl: string): Promise<Blob> {
+  async downloadMedia(mediaUrl: string, options: DownloadMediaOptions = {}): Promise<DownloadedMedia> {
+    const maxBytes = options.maxBytes ?? mediaLimitFromEnv();
     const response = await fetch(mediaUrl, {
       headers: {
         Authorization: `Basic ${Buffer.from(
@@ -64,6 +97,24 @@ export class TwilioWhatsAppClient {
       throw new Error(`Twilio media download failed: ${response.status} ${response.statusText}`);
     }
 
-    return await response.blob();
+    const contentType = response.headers.get("content-type") ?? "application/octet-stream";
+    if (!isAllowedContentType(contentType, options.allowedContentTypes)) {
+      throw new Error(`Twilio media content type is not allowed: ${contentType}`);
+    }
+
+    const contentLength = response.headers.get("content-length");
+    if (contentLength) {
+      const parsedLength = Number.parseInt(contentLength, 10);
+      if (Number.isFinite(parsedLength) && parsedLength > maxBytes) {
+        throw new Error(`Twilio media exceeds limit of ${maxBytes} bytes`);
+      }
+    }
+
+    const buffer = await response.arrayBuffer();
+    if (buffer.byteLength > maxBytes) {
+      throw new Error(`Twilio media exceeds limit of ${maxBytes} bytes after download`);
+    }
+
+    return { bytes: new Uint8Array(buffer), contentType };
   }
 }

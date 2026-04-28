@@ -2,6 +2,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { isAllowlisted, normalizeWhatsAppAddress } from "./allowlist";
 import { downloadStoredAttachment, startWebhookServer, type InboundMessage } from "./webhook";
 import { getTwilioConfigFromEnv, TwilioWhatsAppClient } from "./twilio-client";
 
@@ -67,7 +68,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === "reply") {
     const args = ReplyArgs.parse(rawArgs ?? {});
-    const results = await twilioClient.sendMessage(args.chat_id, args.text);
+    const chatId = normalizeWhatsAppAddress(args.chat_id);
+    if (!(await isAllowlisted(chatId))) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ ok: false, error: "chat_id is not allowlisted" }, null, 2),
+          },
+        ],
+      };
+    }
+
+    const results = await twilioClient.sendMessage(chatId, args.text);
     return {
       content: [
         {

@@ -98,6 +98,22 @@ systemctl --user status whatsapp-bridge whatsapp-mcp-server whatsapp-poller
 journalctl --user -u whatsapp-bridge -f
 ```
 
+## Twilio wa-channel notes
+
+The TypeScript `wa-channel` transport uses Twilio WhatsApp webhooks plus an allowlist in `~/.claude/channels/wa-channel/access.json`.
+
+Required Twilio env vars:
+- `TWILIO_ACCOUNT_SID`
+- `TWILIO_AUTH_TOKEN`
+- `TWILIO_PHONE_NUMBER` (for example, `whatsapp:+14155238886`)
+- `WEBHOOK_URL` — must exactly match the public webhook URL configured in Twilio; it is used for `X-Twilio-Signature` validation.
+
+Security notes:
+- `SKIP_TWILIO_VALIDATION=true` bypasses Twilio signature validation. Use it only for local development, never production.
+- Outbound replies are sent only to allowlisted WhatsApp numbers.
+- Unknown senders receive a pairing code. They must reply from the same WhatsApp number with `PAIR <code>` to add themselves to the allowlist.
+- Attachment handling is bounded by `WA_CHANNEL_MAX_ATTACHMENTS` (default `4`), `WA_CHANNEL_MAX_MEDIA_BYTES` (default `10485760`), and `WA_CHANNEL_ALLOWED_MEDIA_TYPES` (default `image/*,audio/*,video/*,application/pdf,text/plain`).
+
 ## Repo layout
 
 - `install.sh` — Linux server bootstrap
