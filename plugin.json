@@ -1,0 +1,1 @@
+{"name":"wa-channel","version":"0.1.0","description":"Claude Code channel plugin for WhatsApp via Twilio","runtime":"bun","entrypoint":"server.ts","capabilities":{"experimental":{"claude/channel":{}},"tools":{}},"env":["TWILIO_ACCOUNT_SID","TWILIO_AUTH_TOKEN","TWILIO_PHONE_NUMBER","WEBHOOK_PORT","WEBHOOK_URL","SKIP_TWILIO_VALIDATION"]}
