@@ -85,7 +85,9 @@ export class TwilioWhatsAppClient {
 
   async downloadMedia(mediaUrl: string, options: DownloadMediaOptions = {}): Promise<DownloadedMedia> {
     const maxBytes = options.maxBytes ?? mediaLimitFromEnv();
+    const abortController = new AbortController();
     const response = await fetch(mediaUrl, {
+      signal: abortController.signal,
       headers: {
         Authorization: `Basic ${Buffer.from(
           `${process.env.TWILIO_ACCOUNT_SID ?? ""}:${process.env.TWILIO_AUTH_TOKEN ?? ""}`,
@@ -99,6 +101,8 @@ export class TwilioWhatsAppClient {
 
     const contentType = response.headers.get("content-type") ?? "application/octet-stream";
     if (!isAllowedContentType(contentType, options.allowedContentTypes)) {
+      abortController.abort();
+      await response.body?.cancel().catch(() => undefined);
       throw new Error(`Twilio media content type is not allowed: ${contentType}`);
     }
 
@@ -106,15 +110,44 @@ export class TwilioWhatsAppClient {
     if (contentLength) {
       const parsedLength = Number.parseInt(contentLength, 10);
       if (Number.isFinite(parsedLength) && parsedLength > maxBytes) {
+        abortController.abort();
+        await response.body?.cancel().catch(() => undefined);
         throw new Error(`Twilio media exceeds limit of ${maxBytes} bytes`);
       }
     }
 
-    const buffer = await response.arrayBuffer();
-    if (buffer.byteLength > maxBytes) {
-      throw new Error(`Twilio media exceeds limit of ${maxBytes} bytes after download`);
+    const reader = response.body?.getReader();
+    if (!reader) {
+      return { bytes: new Uint8Array(), contentType };
     }
 
-    return { bytes: new Uint8Array(buffer), contentType };
+    const chunks: Uint8Array[] = [];
+    let received = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+
+        received += value.byteLength;
+        if (received > maxBytes) {
+          abortController.abort();
+          await reader.cancel().catch(() => undefined);
+          throw new Error(`Twilio media exceeds limit of ${maxBytes} bytes during download`);
+        }
+        chunks.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    const bytes = new Uint8Array(received);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+
+    return { bytes, contentType };
   }
 }
