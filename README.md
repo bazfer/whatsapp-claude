@@ -98,6 +98,24 @@ systemctl --user status whatsapp-bridge whatsapp-mcp-server whatsapp-poller
 journalctl --user -u whatsapp-bridge -f
 ```
 
+## Twilio wa-channel notes
+
+The TypeScript `wa-channel` transport uses Twilio WhatsApp webhooks plus an allowlist in `~/.claude/channels/wa-channel/access.json`.
+
+Required Twilio env vars:
+- `TWILIO_ACCOUNT_SID`
+- `TWILIO_AUTH_TOKEN`
+- `TWILIO_PHONE_NUMBER` (for example, `whatsapp:+14155238886`)
+- `WEBHOOK_URL` — must exactly match the public webhook URL configured in Twilio; it is used for `X-Twilio-Signature` validation.
+
+Security notes:
+- `SKIP_TWILIO_VALIDATION=true` bypasses Twilio signature validation. Use it only for local development, never production.
+- Outbound replies are sent only to allowlisted WhatsApp numbers.
+- Unknown senders do **not** receive pairing codes. The webhook stores a pending request in `~/.claude/channels/wa-channel/access.json` under `pending`, logs `wa-channel access request: from=... code=...` to the wa-channel process/container logs, and sends the sender only: `Access request sent; an owner must approve you.`
+- Owners approve requests from a Claude Code session with the `approve_access_request` MCP tool using the code from the logs. `list_access_requests` shows pending numbers and timestamps. Approval adds the normalized number to `allowFrom` and removes it from `pending`.
+- Inbound `PAIR <code>` messages from unknown senders are ignored for authorization and receive the same owner-approval message.
+- Attachment handling is bounded by `WA_CHANNEL_MAX_ATTACHMENTS` (default `4`), `WA_CHANNEL_MAX_MEDIA_BYTES` (default `10485760`), and `WA_CHANNEL_ALLOWED_MEDIA_TYPES` (default `image/*,audio/*,video/*,application/pdf,text/plain`).
+
 ## Repo layout
 
 - `install.sh` — Linux server bootstrap
