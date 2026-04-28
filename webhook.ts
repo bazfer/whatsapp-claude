@@ -2,11 +2,9 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { validateRequest } from "twilio";
 import {
-  allowWithPairingCode,
   CHANNEL_HOME,
-  hasPendingPairingCode,
+  issueAccessRequest,
   isAllowlisted,
-  issuePairingCode,
   normalizeWhatsAppAddress,
 } from "./allowlist";
 import { DEFAULT_MAX_MEDIA_BYTES, TwilioWhatsAppClient } from "./twilio-client";
@@ -47,11 +45,6 @@ function isAllowedContentType(contentType: string, allowed: readonly string[]): 
     if (entry.endsWith("/*")) return normalized.startsWith(entry.slice(0, -1));
     return normalized === entry;
   });
-}
-
-function parsePairCommand(text: string): string | undefined {
-  const match = text.trim().match(/^pair\s+([A-Za-z0-9-]{4,64})$/i);
-  return match?.[1];
 }
 
 export type InboundAttachment = {
@@ -212,32 +205,15 @@ export function startWebhookServer(options: WebhookOptions): WebhookServer {
       if (!from) return new Response("missing From", { status: 400 });
 
       if (!(await isAllowlisted(from))) {
-        const pairingCode = parsePairCommand(params.Body ?? "");
-        if (pairingCode) {
-          const paired = await allowWithPairingCode(from, pairingCode);
-          const message = paired
-            ? "WhatsApp pairing complete. You can now message Claude from this number."
-            : "That pairing code was not valid for this WhatsApp number. Please check the code and reply with PAIR <code>.";
-          try {
-            await options.twilioClient.sendMessage(from, message);
-          } catch (error) {
-            console.error("Failed to send WhatsApp pairing result", error);
-            return twiml(message);
-          }
-          return new Response(paired ? "paired" : "invalid pairing code", { status: 202 });
-        }
-
-        const hasPending = await hasPendingPairingCode(from);
-        const message = hasPending
-          ? "This WhatsApp number is not paired with Claude yet. Reply with PAIR <code> using the pairing code you received."
-          : `This WhatsApp number is not paired with Claude yet. Reply with PAIR ${await issuePairingCode(from)} to pair this number.`;
+        await issueAccessRequest(from);
+        const message = "Access request sent; an owner must approve you.";
         try {
           await options.twilioClient.sendMessage(from, message);
         } catch (error) {
-          console.error("Failed to send WhatsApp pairing instructions", error);
+          console.error("Failed to send WhatsApp access request acknowledgement", error);
           return twiml(message);
         }
-        return new Response("unpaired", { status: 202 });
+        return new Response("access request pending", { status: 202 });
       }
 
       let attachments: InboundAttachment[];

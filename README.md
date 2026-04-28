@@ -111,7 +111,9 @@ Required Twilio env vars:
 Security notes:
 - `SKIP_TWILIO_VALIDATION=true` bypasses Twilio signature validation. Use it only for local development, never production.
 - Outbound replies are sent only to allowlisted WhatsApp numbers.
-- Unknown senders receive a pairing code. They must reply from the same WhatsApp number with `PAIR <code>` to add themselves to the allowlist.
+- Unknown senders do **not** receive pairing codes. The webhook stores a pending request in `~/.claude/channels/wa-channel/access.json` under `pending`, logs `wa-channel access request: from=... code=...` to the wa-channel process/container logs, and sends the sender only: `Access request sent; an owner must approve you.`
+- Owners approve requests from a Claude Code session with the `approve_access_request` MCP tool using the code from the logs. `list_access_requests` shows pending numbers and timestamps. Approval adds the normalized number to `allowFrom` and removes it from `pending`.
+- Inbound `PAIR <code>` messages from unknown senders are ignored for authorization and receive the same owner-approval message.
 - Attachment handling is bounded by `WA_CHANNEL_MAX_ATTACHMENTS` (default `4`), `WA_CHANNEL_MAX_MEDIA_BYTES` (default `10485760`), and `WA_CHANNEL_ALLOWED_MEDIA_TYPES` (default `image/*,audio/*,video/*,application/pdf,text/plain`).
 
 ## Repo layout

@@ -3,26 +3,30 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 
-export type AccessConfig = {
-  allowFrom: string[];
-  dmPolicy: "allowlisted";
-};
-
-type PendingPairing = {
+export type AccessRequest = {
   from: string;
   codeHash: string;
   createdAt: string;
 };
 
-type PendingConfig = {
-  pairings: PendingPairing[];
+export type AccessConfig = {
+  allowFrom: string[];
+  dmPolicy: "allowlisted";
+  pending: AccessRequest[];
 };
 
-export const CHANNEL_HOME = join(homedir(), ".claude", "channels", "wa-channel");
-export const ACCESS_PATH = join(CHANNEL_HOME, "access.json");
-const PENDING_PATH = join(CHANNEL_HOME, "pairing.json");
+const LEGACY_PENDING_KEY = "pairings";
 
-const DEFAULT_ACCESS: AccessConfig = { allowFrom: [], dmPolicy: "allowlisted" };
+type RawAccessConfig = Partial<Omit<AccessConfig, "pending">> & {
+  pending?: unknown;
+  pairings?: unknown;
+};
+
+export const CHANNEL_HOME = process.env.WA_CHANNEL_HOME ?? join(homedir(), ".claude", "channels", "wa-channel");
+export const ACCESS_PATH = join(CHANNEL_HOME, "access.json");
+const LEGACY_PENDING_PATH = join(CHANNEL_HOME, "pairing.json");
+
+const DEFAULT_ACCESS: AccessConfig = { allowFrom: [], dmPolicy: "allowlisted", pending: [] };
 
 async function ensureHome(): Promise<void> {
   await mkdir(CHANNEL_HOME, { recursive: true });
@@ -35,20 +39,52 @@ export function normalizeWhatsAppAddress(value: string): string {
   return trimmed;
 }
 
+function normalizePending(value: unknown): AccessRequest[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return undefined;
+      const candidate = entry as Partial<AccessRequest>;
+      if (!candidate.from || !candidate.codeHash || !candidate.createdAt) return undefined;
+      return {
+        from: normalizeWhatsAppAddress(String(candidate.from)),
+        codeHash: String(candidate.codeHash),
+        createdAt: String(candidate.createdAt),
+      };
+    })
+    .filter((entry): entry is AccessRequest => Boolean(entry));
+}
+
+async function readLegacyPending(): Promise<AccessRequest[]> {
+  try {
+    const parsed = JSON.parse(await readFile(LEGACY_PENDING_PATH, "utf8")) as { pairings?: unknown };
+    return normalizePending(parsed.pairings);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return [];
+  }
+}
+
 export async function readAccessConfig(): Promise<AccessConfig> {
   await ensureHome();
   try {
-    const parsed = JSON.parse(await readFile(ACCESS_PATH, "utf8")) as Partial<AccessConfig>;
-    return {
+    const parsed = JSON.parse(await readFile(ACCESS_PATH, "utf8")) as RawAccessConfig;
+    const rawPending = parsed.pending ?? parsed[LEGACY_PENDING_KEY];
+    const access: AccessConfig = {
       allowFrom: Array.isArray(parsed.allowFrom)
         ? parsed.allowFrom.map((n) => normalizeWhatsAppAddress(String(n)))
         : [],
       dmPolicy: "allowlisted",
+      pending: normalizePending(rawPending),
     };
+    if (rawPending === undefined) {
+      access.pending = await readLegacyPending();
+    }
+    return access;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     await writeAccessConfig(DEFAULT_ACCESS);
-    return DEFAULT_ACCESS;
+    return { ...DEFAULT_ACCESS, allowFrom: [], pending: [] };
   }
 }
 
@@ -57,6 +93,7 @@ export async function writeAccessConfig(config: AccessConfig): Promise<void> {
   const clean: AccessConfig = {
     allowFrom: Array.from(new Set(config.allowFrom.map(normalizeWhatsAppAddress))).sort(),
     dmPolicy: "allowlisted",
+    pending: normalizePending(config.pending).sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
   };
   await writeFile(ACCESS_PATH, `${JSON.stringify(clean, null, 2)}\n`, "utf8");
 }
@@ -64,22 +101,6 @@ export async function writeAccessConfig(config: AccessConfig): Promise<void> {
 export async function isAllowlisted(from: string): Promise<boolean> {
   const access = await readAccessConfig();
   return access.allowFrom.includes(normalizeWhatsAppAddress(from));
-}
-
-async function readPending(): Promise<PendingConfig> {
-  await ensureHome();
-  try {
-    const parsed = JSON.parse(await readFile(PENDING_PATH, "utf8")) as Partial<PendingConfig>;
-    return { pairings: Array.isArray(parsed.pairings) ? parsed.pairings : [] };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    return { pairings: [] };
-  }
-}
-
-async function writePending(config: PendingConfig): Promise<void> {
-  await ensureHome();
-  await writeFile(PENDING_PATH, `${JSON.stringify(config, null, 2)}\n`, "utf8");
 }
 
 function hashCode(code: string): string {
@@ -94,33 +115,42 @@ function codeEquals(code: string, hash: string): boolean {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-export async function issuePairingCode(from: string): Promise<string> {
+export async function issueAccessRequest(from: string): Promise<{ from: string; code: string; createdAt: string; alreadyPending: boolean }> {
   const normalized = normalizeWhatsAppAddress(from);
-  const code = randomBytes(4).toString("hex").toUpperCase();
-  const pending = await readPending();
-  const fresh = pending.pairings.filter((p) => p.from !== normalized);
-  fresh.push({ from: normalized, codeHash: hashCode(code), createdAt: new Date().toISOString() });
-  await writePending({ pairings: fresh });
-  return code;
-}
-
-export async function hasPendingPairingCode(from: string): Promise<boolean> {
-  const normalized = normalizeWhatsAppAddress(from);
-  const pending = await readPending();
-  return pending.pairings.some((p) => p.from === normalized);
-}
-
-export async function allowWithPairingCode(from: string, code: string): Promise<boolean> {
-  const normalized = normalizeWhatsAppAddress(from);
-  const pending = await readPending();
-  const match = pending.pairings.find((p) => p.from === normalized && codeEquals(code, p.codeHash));
-  if (!match) return false;
-
   const access = await readAccessConfig();
-  if (!access.allowFrom.includes(normalized)) {
-    access.allowFrom.push(normalized);
-    await writeAccessConfig(access);
+  const existing = access.pending.find((p) => p.from === normalized);
+  if (existing) {
+    return { from: normalized, code: "", createdAt: existing.createdAt, alreadyPending: true };
   }
-  await writePending({ pairings: pending.pairings.filter((p) => p !== match) });
-  return true;
+
+  const code = randomBytes(4).toString("hex").toUpperCase();
+  const createdAt = new Date().toISOString();
+  access.pending.push({ from: normalized, codeHash: hashCode(code), createdAt });
+  await writeAccessConfig(access);
+  console.error(`wa-channel access request: from=${normalized} code=${code} createdAt=${createdAt}`);
+  return { from: normalized, code, createdAt, alreadyPending: false };
+}
+
+export async function hasPendingAccessRequest(from: string): Promise<boolean> {
+  const normalized = normalizeWhatsAppAddress(from);
+  const access = await readAccessConfig();
+  return access.pending.some((p) => p.from === normalized);
+}
+
+export async function listAccessRequests(): Promise<Array<{ from: string; createdAt: string }>> {
+  const access = await readAccessConfig();
+  return access.pending.map(({ from, createdAt }) => ({ from, createdAt }));
+}
+
+export async function approveAccessRequest(code: string): Promise<{ approved: boolean; from?: string }> {
+  const access = await readAccessConfig();
+  const match = access.pending.find((p) => codeEquals(code, p.codeHash));
+  if (!match) return { approved: false };
+
+  if (!access.allowFrom.includes(match.from)) {
+    access.allowFrom.push(match.from);
+  }
+  access.pending = access.pending.filter((p) => p !== match);
+  await writeAccessConfig(access);
+  return { approved: true, from: match.from };
 }

@@ -2,7 +2,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { isAllowlisted, normalizeWhatsAppAddress } from "./allowlist";
+import { approveAccessRequest, isAllowlisted, listAccessRequests, normalizeWhatsAppAddress } from "./allowlist";
 import { downloadStoredAttachment, startWebhookServer, type InboundMessage } from "./webhook";
 import { getTwilioConfigFromEnv, TwilioWhatsAppClient } from "./twilio-client";
 
@@ -14,6 +14,10 @@ const ReplyArgs = z.object({
 const DownloadAttachmentArgs = z.object({
   chat_id: z.string().min(1),
   message_id: z.string().min(1),
+});
+
+const ApproveAccessRequestArgs = z.object({
+  code: z.string().min(4).max(64),
 });
 
 const twilioConfig = getTwilioConfigFromEnv();
@@ -60,6 +64,25 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ["chat_id", "message_id"],
       },
     },
+    {
+      name: "list_access_requests",
+      description: "List pending WhatsApp access requests awaiting owner approval.",
+      inputSchema: {
+        type: "object",
+        properties: {},
+      },
+    },
+    {
+      name: "approve_access_request",
+      description: "Approve a pending WhatsApp access request by the code shown in wa-channel logs.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          code: { type: "string", description: "Access request code from the wa-channel container logs." },
+        },
+        required: ["code"],
+      },
+    },
   ],
 }));
 
@@ -99,6 +122,31 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         {
           type: "text",
           text: JSON.stringify({ ok: true, paths }, null, 2),
+        },
+      ],
+    };
+  }
+
+  if (name === "list_access_requests") {
+    const pending = await listAccessRequests();
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ ok: true, pending }, null, 2),
+        },
+      ],
+    };
+  }
+
+  if (name === "approve_access_request") {
+    const args = ApproveAccessRequestArgs.parse(rawArgs ?? {});
+    const result = await approveAccessRequest(args.code);
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(result.approved ? { ok: true, from: result.from } : { ok: false, error: "access request code not found" }, null, 2),
         },
       ],
     };
